@@ -1,27 +1,29 @@
 #!/usr/bin/env python3
 
-import platform
 import argparse
 from timeit import default_timer as timer
 from PIL import Image, ImageDraw, ImageFont
-from edgetpu.detection.engine import DetectionEngine
+from pycoral.adapters import common
+from pycoral.adapters import detect
+from pycoral.utils.dataset import read_label_file
 
-PLATFORM = 'edge_tpu'
-
-def inference_edgetpu(runs, image, model, output, label=None):
-    engine = DetectionEngine(model)
-    labels = ReadLabelFile(label) if label else None
+def inference_pycoral(runs, image, model, output, label=None):
+    interpreter = common.make_interpreter(model)
+    interpreter.allocate_tensors()
+    labels = read_label_file(label) if label else None
     img = Image.open(image)
     draw = ImageDraw.Draw(img, 'RGBA')
     helvetica = ImageFont.truetype("./Helvetica.ttf", size=72)
     initial_h, initial_w = img.size
     frame = img.resize((300, 300))
 
-    print("Running inferencing for", runs, "times.")
+    print("Running inference for", runs, "times.")
 
     start = timer()
     for _ in range(runs):
-        ans = engine.DetectWithImage(frame, threshold=0.05, relative_coord=False, top_k=10)
+        common.set_input(interpreter, frame)
+        interpreter.invoke()
+        ans = detect.get_objects(interpreter, 0.05, (initial_h / 300), (initial_w / 300))
     end = timer()
 
     print('Elapsed time is', ((end - start) / runs) * 1000, 'ms')
@@ -30,31 +32,17 @@ def inference_edgetpu(runs, image, model, output, label=None):
         print("Processing output")
         for obj in ans:
             if obj.score > 0.5:
-                print(labels[obj.label_id], 'score =', obj.score) if labels else print('score =', obj.score)
-                box = obj.bounding_box.flatten().tolist()
-                bbox = [0] * 4
-                bbox[0] = box[0] * (initial_h / 300)
-                bbox[1] = box[1] * (initial_w / 300)
-                bbox[2] = box[2] * (initial_h / 300)
-                bbox[3] = box[3] * (initial_w / 300)
-                print('box =', box)
+                print(labels[obj.id], 'score =', obj.score) if labels else print('score =', obj.score)
+                bbox = obj.bbox.flatten().tolist()
+                print('box =', bbox)
+                bbox = [bbox[1], bbox[0], bbox[3], bbox[2]]  # Convert from (ymin, xmin, ymax, xmax) to (xmin, ymin, xmax, ymax)
                 draw_rectangle(draw, bbox, (0, 128, 128, 20), width=5)
                 if labels:
-                    draw.text((bbox[0] + 20, bbox[1] + 20), labels[obj.label_id], fill=(255, 255, 255, 20),
-                              font=helvetica)
+                    draw.text((bbox[0] + 20, bbox[1] + 20), labels[obj.id], fill=(255, 255, 255, 20), font=helvetica)
         img.save(output)
         print('Saved to', output)
     else:
-        print('No object detected!')
-
-def ReadLabelFile(file_path):
-    with open(file_path, 'r') as f:
-        lines = f.readlines()
-    ret = {}
-    for line in lines:
-        pair = line.strip().split(maxsplit=1)
-        ret[int(pair[0])] = pair[1].strip()
-    return ret
+        print('No objects detected!')
 
 # Function to draw a rectangle with width > 1
 def draw_rectangle(draw, coordinates, color, width=1):
@@ -82,7 +70,7 @@ def main():
     else:
         label_file = None
 
-    inference_edgetpu(args.runs, args.input, args.model, output_file, label_file)
+    inference_pycoral(args.runs, args.input, args.model, output_file, label_file)
 
 if __name__ == '__main__':
     main()
